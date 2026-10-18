@@ -26,6 +26,8 @@ from wirepay_core import report  # noqa: E402
 from wirepay_core.config import load_agent_config, load_spec  # noqa: E402
 from wirepay_core.engine import run_dual  # noqa: E402
 from wirepay_core.generator import SCENARIOS, generate_requests, scenario_request  # noqa: E402
+from wirepay_core.gate import Gate  # noqa: E402
+from wirepay_core.store import default_store  # noqa: E402
 from wirepay_core.runtime import adapters_from_config  # noqa: E402
 
 
@@ -53,7 +55,10 @@ def cmd_single(a) -> int:
     else:
         req = scenario_request(a.scenario, today)
     req.setdefault("processingDate", today)
-    run = run_dual([req], old, new, load_spec(a.spec))
+    run = run_dual([req], old, new, load_spec(a.spec, default_store().load_custom_rules()))
+    if not a.no_save:
+        st_ = default_store()
+        print("saved to history as", st_.save_run(run, "dualrun", a.label, source="cli", kind="single", gate=Gate(**st_.load_settings()["gate"])))
     r = run.results[0]
     print(f"\nPayment {r.request_id}: {r.verdict}\n")
     print(f"  {'rule':<6} {'check':<26} {'old':<26} {'new':<26} result")
@@ -67,7 +72,10 @@ def cmd_single(a) -> int:
 def cmd_bulk(a) -> int:
     old, new, today = _setup(a)
     reqs, _ = generate_requests(a.n, a.seed, today)
-    run = run_dual(reqs, old, new, load_spec(a.spec))
+    run = run_dual(reqs, old, new, load_spec(a.spec, default_store().load_custom_rules()))
+    if not a.no_save:
+        st_ = default_store()
+        print("saved to history as", st_.save_run(run, "dualrun", a.label, source="cli", kind="dual-run", gate=Gate(**st_.load_settings()["gate"])))
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.html").write_text(report.to_html(run), encoding="utf-8")
@@ -96,12 +104,16 @@ def main() -> int:
     s.add_argument("--file")
     s.add_argument("--parity-fix", action="store_true")
     s.add_argument("--no-fail", action="store_true")
+    s.add_argument("--label", default="")
+    s.add_argument("--no-save", action="store_true", help="do not save this run to the history")
     s.set_defaults(fn=cmd_single)
     b = sub.add_parser("bulk")
     b.add_argument("--n", type=int, default=1000)
     b.add_argument("--seed", type=int, default=7)
     b.add_argument("--parity-fix", action="store_true")
     b.add_argument("--no-fail", action="store_true")
+    b.add_argument("--label", default="")
+    b.add_argument("--no-save", action="store_true", help="do not save this run to the history")
     b.add_argument("--out", default=str(ROOT / "out"))
     b.set_defaults(fn=cmd_bulk)
     a = ap.parse_args()

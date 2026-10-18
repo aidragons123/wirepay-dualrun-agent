@@ -1,6 +1,4 @@
-"""
-Agent 2 - DUAL-RUN.  The SAME request goes to the OLD and the NEW implementation, live,
-and the two answers are compared.
+"""Twin Run - the SAME request goes to the OLD and the NEW implementation, live, and the answers are compared.
 
 Run with:  streamlit run streamlit_app.py     (or `make ui`)
 """
@@ -16,116 +14,138 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from wirepay_core import ui  # noqa: E402
-from wirepay_core.adapters import HttpAdapter  # noqa: E402
-from wirepay_core.config import load_spec  # noqa: E402
+from wirepay_core import capture, ui  # noqa: E402
+from wirepay_core.brand import TWIN_RUN as AGENT  # noqa: E402
 from wirepay_core.engine import run_dual  # noqa: E402
 from wirepay_core.generator import SCENARIOS, generate_requests, scenario_request  # noqa: E402
-from wirepay_core.runtime import standin_adapters  # noqa: E402
+from wirepay_core.shell import Ctx, run_app  # noqa: E402
 
-st.set_page_config(page_title="Wire payments · Dual-run agent", page_icon="⚖️", layout="wide")
-ui.inject_css()
-
-
-@st.cache_resource(show_spinner="Compiling the Java services (old → Java 8, new → Java 18)…")
-def _standins(parity_fix: bool):
-    return standin_adapters(ROOT, parity_fix)
+FIELDS = [("debtorName", "Debtor name"), ("debtorAccount", "Debtor IBAN"), ("creditorName", "Creditor name"),
+          ("creditorAccount", "Creditor IBAN"), ("creditorBic", "Creditor BIC"), ("amount", "Amount"),
+          ("currency", "Currency"), ("valueDate", "Value date"), ("chargeBearer", "Charge bearer"), ("remittanceInfo", "Remittance text")]
 
 
-ui.hero("Agent 2 · Dual-run",
-        "Same request in, same answer out?",
-        "Send one request — or a thousand — to the old Java 8 service and the new Java 18 / ISO 20022 service "
-        "at the same time, and compare what each one decides, rule by rule.")
-
-# ------------------------------------------------------------------ sidebar
-with st.sidebar:
-    st.header("Old implementation")
-    old_kind = st.radio("Old", ["Stand-in · Java 8 target", "External HTTP endpoint"], label_visibility="collapsed")
-    old_url, old_auth = "", ""
-    if old_kind == "External HTTP endpoint":
-        old_url = st.text_input("Old URL", placeholder="https://wire-old.example/api/payments")
-        old_auth = st.text_input("Old Authorization header", type="password")
-
-    st.header("New implementation")
-    new_kind = st.radio("New", ["Stand-in · parity gaps present", "Stand-in · parity gaps fixed", "External HTTP endpoint"],
-                        label_visibility="collapsed")
-    new_url, new_auth = "", ""
-    if new_kind == "External HTTP endpoint":
-        new_url = st.text_input("New URL", placeholder="https://wire-new.example/api/payments")
-        new_auth = st.text_input("New Authorization header", type="password")
-    else:
-        st.caption("The stand-in has two deliberate gaps (fee rounding, same-day cut-off) so there is something "
-                   "real to find. 'Fixed' shows a clean migration.")
-
-    proc_date = st.date_input("Processing date", value=date.today(),
-                              help="Sent as processingDate. The stand-ins use it for the 'value date in the past' rule.")
+def dual(ctx: Ctx, requests: list[dict], label: str, notes: str, source: str, kind: str):
+    try:
+        old, new, notes_ = ctx.adapters()
+        spec = ctx.spec()
+        run = ctx.execute(lambda say, on_count: run_dual(requests, old, new, spec, progress=say, on_count=on_count))
+    except Exception as exc:
+        st.error(f"The run failed: {exc}")
+        return None
+    for n in notes_:
+        st.toast(n)
+    return run, ctx.record(run, label, notes, source=source, kind=kind)
 
 
-def build_adapters():
-    parity_fix = new_kind.endswith("fixed")
-    s_old, s_new, notes = _standins(parity_fix)
-    if old_kind == "External HTTP endpoint":
-        if not old_url:
-            raise ValueError("Enter the old endpoint URL.")
-        s_old = HttpAdapter(old_url, {"Authorization": old_auth} if old_auth else {}, label="old (external)")
-    if new_kind == "External HTTP endpoint":
-        if not new_url:
-            raise ValueError("Enter the new endpoint URL.")
-        s_new = HttpAdapter(new_url, {"Authorization": new_auth} if new_auth else {}, label="new (external)")
-    return s_old, s_new, notes
+def quick_start(ctx: Ctx) -> None:
+    reqs, _ = generate_requests(1000, 7, date.today())
+    if dual(ctx, reqs, "Sample batch", "1,000 generated requests", "generated-1000-seed7", "dual-run"):
+        pass
 
 
-tab_single, tab_bulk = st.tabs(["Single request", "Bulk run"])
-
-# ------------------------------------------------------------------ single
-with tab_single:
-    label = st.selectbox("Scenario", list(SCENARIOS))
-    req = scenario_request(label, proc_date)
-    text = st.text_area("Request (editable JSON)", json.dumps(req, indent=2, ensure_ascii=False), height=300,
-                        key=f"req_{label}_{proc_date}")
-    if st.button("▶ Send to both implementations", type="primary", key="go_single"):
+def single_tab(ctx: Ctx, proc: date) -> None:
+    c1, c2 = st.columns([1.1, 1], gap="large")
+    with c1:
+        scenario = st.selectbox("Start from a scenario", list(SCENARIOS))
+        base = scenario_request(scenario, proc)
+        k = f"{scenario}-{proc}"
+        as_json = st.toggle("Edit as JSON", key=f"js_{k}")
+        if as_json:
+            text = st.text_area("Request", json.dumps(base, indent=2, ensure_ascii=False), height=380, key=f"txt_{k}")
+        else:
+            payload = dict(base)
+            a, b = st.columns(2)
+            for i, (key, title) in enumerate(FIELDS):
+                payload[key] = (a if i % 2 == 0 else b).text_input(title, str(base.get(key, "")), key=f"f_{key}_{k}")
+    with c2:
+        with st.container(border=True):
+            st.markdown("#### Send to both")
+            st.caption("The identical request, with the same processing date, goes to the old and the new service.")
+            go = st.button("Send to both services", type="primary", width="stretch", key="go_single")
+    if go:
         try:
-            payload = json.loads(text)
-            payload.setdefault("processingDate", proc_date.isoformat())
-            old_ad, new_ad, notes = build_adapters()
-            run = run_dual([payload], old_ad, new_ad, load_spec())
-            st.session_state["dual_single"] = (run, notes)
-        except json.JSONDecodeError as e:
-            st.error(f"The request is not valid JSON: {e}")
-        except Exception as e:
-            st.error(f"Run failed: {e}")
-    if "dual_single" in st.session_state:
-        run, notes = st.session_state["dual_single"]
-        for n in notes:
-            st.info(n)
-        ui.inspector(run.results[0], "single")
-        with st.expander("Run trace"):
-            ui.trace_view(run)
+            req = json.loads(text) if as_json else {k_: v for k_, v in payload.items() if v != "" or k_ in base}
+        except json.JSONDecodeError as exc:
+            st.error(f"That is not valid JSON: {exc}")
+            return
+        req.setdefault("processingDate", proc.isoformat())
+        out = dual(ctx, [req], scenario, "", "single request", "single")
+        if out:
+            st.session_state["twin_single"] = out[1]
+            st.rerun()          # refresh the sidebar's latest-run card
+    rid = st.session_state.get("twin_single")
+    if rid:
+        sm, run = ctx.store.load_run(rid)
+        st.divider()
+        r = run.results[0]
+        if r.verdict == "MATCH":
+            st.success("Both services agree on every rule.")
+        elif r.verdict == "EXPECTED_DIFFERENCE":
+            st.info("The services differ only where a documented new feature explains it.")
+        else:
+            st.error("The services disagree in a way nothing documents.")
+        ui.inspector(r, "single")
 
-# ------------------------------------------------------------------ bulk
-with tab_bulk:
-    c1, c2, _ = st.columns([1, 1, 2])
-    n = c1.number_input("Requests", 10, 5000, 1000, step=100)
-    seed = c2.number_input("Random seed", 1, 9999, 7)
-    st.caption("Requests are generated with realistic edge cases mixed in (bad IBANs, long names, EUR bank holidays, "
-               "half-cent fees, same-day payments, rejections). Every request is sent, unchanged, to both services.")
-    if st.button("▶ Send all to both implementations", type="primary", key="go_bulk"):
-        try:
-            old_ad, new_ad, notes = build_adapters()
-            reqs, _ = generate_requests(int(n), int(seed), proc_date)
-            with st.status("Running both implementations…", expanded=False) as status:
-                run = run_dual(reqs, old_ad, new_ad, load_spec(), progress=lambda m: status.update(label=m))
-                status.update(label=f"Done — {run.counts['total']} payments compared", state="complete")
-            st.session_state["dual_bulk"] = (run, notes)
-        except Exception as e:
-            st.error(f"Run failed: {e}")
-    if "dual_bulk" in st.session_state:
-        run, notes = st.session_state["dual_bulk"]
-        for note in notes:
-            st.info(note)
-        ui.render_run(run, key="bulk", stem="dualrun-report")
-    else:
-        ui.flow([("Generate", "Realistic requests with edge cases mixed in."),
-                 ("Send to both", "Identical request to old and new, same processing date."),
-                 ("Compare", "14 mapping rules + 6 new-feature checks per payment."),
-                 ("Diagnose", "Differences grouped into patterns with a suggested fix.")])
+
+def batch_tab(ctx: Ctx, proc: date) -> None:
+    left, right = st.columns([1.6, 1], gap="large")
+    reqs, ready, source = [], False, ""
+    with left:
+        with st.container(border=True):
+            st.markdown("#### Requests")
+            mode = st.radio("Source", ["Generate", "Upload requests"], horizontal=True, label_visibility="collapsed")
+            if mode == "Generate":
+                a, b = st.columns(2)
+                n = a.slider("Requests", 10, 5000, 1000, step=10)
+                seed = b.number_input("Random seed", 1, 9999, 7)
+                st.caption("Realistic edge cases are mixed in: bad IBANs, long names, EUR bank holidays, half-cent fees, same-day payments, rejections.")
+                ready, source = True, f"generated-{n}-seed{int(seed)}"
+            else:
+                up = st.file_uploader("JSONL or CSV of requests", type=["jsonl", "json", "csv"])
+                if up is not None:
+                    try:
+                        reqs = capture.parse_requests_bytes(up.getvalue(), up.name)
+                        ready, source = True, up.name
+                        st.success(f"{len(reqs):,} requests read from {up.name}.")
+                    except capture.CaptureError as exc:
+                        st.error(f"Could not read that file: {exc}")
+        with st.container(border=True):
+            st.markdown("#### Name it")
+            label = st.text_input("Run name", placeholder="Release 2.4 candidate", key="b_label")
+            notes = st.text_area("Notes (optional)", height=70, key="b_notes")
+    with right:
+        gate = ctx.gate()
+        with st.container(border=True):
+            st.markdown("#### What will happen")
+            st.markdown("1. Every request goes unchanged to the old and the new service.\n2. Each pair of answers is compared rule by rule.\n3. The run is saved and judged against the release gate.")
+            st.caption(f"Release gate: at most {gate.max_mismatches} mismatches, at least {gate.min_parity_pct}% parity.")
+        go = st.button("Send all to both services", type="primary", width="stretch", disabled=not ready, key="go_batch")
+    if go:
+        if mode == "Generate":
+            reqs, _ = generate_requests(int(n), int(seed), proc)
+        if dual(ctx, reqs, label.strip(), notes.strip(), source, "dual-run"):
+            ctx.go("overview")
+
+
+def workbench(ctx: Ctx) -> None:
+    ui.page_header(AGENT.run_page_title, AGENT.run_page_hint)
+    with st.expander("Services and processing date", expanded=False):
+        a, b, c = st.columns([1, 1, 0.8])
+        with a:
+            st.markdown("**Old service**")
+            ctx.picker("old")
+        with b:
+            st.markdown("**New service**")
+            ctx.picker("new")
+        proc = c.date_input("Processing date", value=date.today(), help="Sent as processingDate. The stand-ins use it for the “value date in the past” rule.")
+        st.session_state["proc_date"] = proc
+    proc = st.session_state.get("proc_date", date.today())
+    t1, t2 = st.tabs(["One payment", "Batch"])
+    with t1:
+        single_tab(ctx, proc)
+    with t2:
+        batch_tab(ctx, proc)
+
+
+run_app(AGENT, ROOT, workbench, quick_start)
