@@ -1,0 +1,28 @@
+# Dual-run agent configuration.
+#
+# The SAME request is sent to BOTH implementations and the answers are compared.
+# Bundled "standin" services run out of the box. Replace either block to test your real systems.
+
+processing_date: auto          # "auto" = today; the stand-ins use it for the past-date rule
+
+old:
+  type: standin                # standin | subprocess | http
+new:
+  type: standin
+  parity_fix: false            # standin only: true = the planted parity gaps are fixed
+
+# --- point at your real services -----------------------------------------------------
+# old:
+#   type: http
+#   url: https://wire-old.internal.example/api/payments      # the deployed Java 8 service
+#   headers: {Authorization: "Bearer <token>"}
+# new:
+#   type: http
+#   url: https://wire-new.internal.example/api/payments      # the Java 18 / pacs.008 service
+#
+# Either side can also be a JVM main class speaking one-JSON-request-per-line:
+# new:
+#   type: subprocess
+#   java_bin: /usr/lib/jvm/java-18-openjdk-amd64/bin/java
+#   classpath: /opt/wire-new/classes
+#   main_class: com.example.wire.Main

@@ -1,0 +1,128 @@
+# Wire payments · Dual-run agent
+
+**Agent 2 of 2** for migrating wire-payment creation from the old Java 8 service (flat payment model, no
+workflow) to the new Java 18 service (workflow model, ISO 20022 **pacs.008**, plus new features).
+
+> Send the **same request** to the old code and the new code at the same time, and compare what each one decides —
+> for one payment you are debugging, or for a thousand generated ones.
+
+Its sibling, [`wirepay-replay-agent`](https://github.com/aidragons123/wirepay-replay-agent), replays what the old
+system already processed in production instead of calling it again.
+
+## Run it
+
+```bash
+pip install -r requirements.txt      # Streamlit, pandas, PyYAML, pytest
+sudo apt-get install -y default-jdk  # only the bundled stand-in services need a JDK
+make ui                              # Streamlit app: Single request + Bulk run
+make single SCENARIO="Bad IBAN checksum"
+make bulk                            # 1,000 requests to both -> out/report.{html,csv,json}
+make bulk-fixed                      # stand-in with its planted gaps fixed: 0 mismatches
+make test
+```
+
+`make bulk` exits with code 1 when any payment mismatches, so it can gate a pipeline.
+
+## What it does
+
+```
+            ┌────────► old Java 8 service ──► flat response ──────────┐
+ request ───┤                                                          ├──► compare, rule by rule ──► patterns + fix
+            └────────► new Java 18 service ─► JSON + pacs.008 ────────┘
+```
+
+- **Single request** — pick a scenario (clean payment, bad IBAN checksum, EUR on a bank holiday, half-cent fee,
+  same-day value date, charge bearer OUR, special characters, over-limit, missing field) or edit the JSON, and see
+  both answers side by side with the rule-by-rule result, the new workflow audit trail and the pacs.008 message.
+- **Bulk run** — generate N requests (realistic edge cases mixed in), send each unchanged to both services,
+  and get KPIs, a rule-by-rule table, mismatch *patterns* with a suggested fix, per-payment inspection and
+  HTML / CSV / JSON reports.
+
+Every payment gets one verdict:
+
+| Verdict | Meaning |
+|---|---|
+| ✅ **Match** | every applicable rule agrees |
+| 🔷 **Expected difference** | differs, but only because of a documented new feature **and** an independent re-derivation confirms it |
+| ❌ **Mismatch** | a difference nothing documents, or a new feature that misbehaves — review it |
+
+### Sample result (1,000 generated requests, seed 7)
+
+| | |
+|---|---|
+| Exact match | 856 |
+| Expected differences | 98 (34 bad IBAN checksums, 39 long names, 25 EUR bank holidays) |
+| Mismatches | 46 → **2 patterns** |
+| P-1 implementation defect | 29 same-day payments rejected by the new code (off-by-one in the past-date check) |
+| P-2 rounding mode | 17 fees on an exact half cent: old rounds HALF_UP, new rounds HALF_EVEN |
+
+## The new features it checks
+
+| Id | New behaviour | How the agent treats it |
+|---|---|---|
+| N-001 | IBAN mod-97 checksum validation | old accepted, new rejected → expected **only if the checksum really fails** |
+| N-002 | TARGET2 holiday-aware settlement date (EUR) | expected **only if** the date is a real closing day and the new date is the right next business day |
+| N-003 | Full-length names (35 → 140 chars) | expected only if old is exactly the 35-char prefix of new |
+| N-004 | UETR (UUIDv4) assigned | verified on every accepted payment |
+| N-005 | Workflow audit trail | verified: starts at RECEIVED, only legal transitions, ends in the state matching the decision |
+| N-006 | pacs.008 structurally complete | verified: all mandatory elements present |
+
+The expected-difference checks use code that never touches the new service (`wirepay_core/explain.py`), so a
+buggy new feature cannot excuse itself.
+
+## Point it at your real services
+
+Both sides are adapters. Edit `agent.yaml`, or use the sidebar in the app:
+
+```yaml
+old:
+  type: http
+  url: https://wire-old.internal.example/api/payments      # your deployed Java 8 service
+  headers: {Authorization: "Bearer <token>"}
+new:
+  type: http
+  url: https://wire-new.internal.example/api/payments      # the Java 18 / pacs.008 service
+```
+
+Each request is POSTed as JSON; the agent adds `processingDate` (today by default), which a real service will
+ignore. A JVM main class that reads one JSON request per line on stdin and writes one JSON response per line
+(`type: subprocess`, with its own `java_bin` — e.g. a real JDK 8 for the old side) works too.
+
+- **Old response**: flat JSON — `paymentId, status (ACCEPTED/REJECTED), errorCode, amount, currency, fee,
+  settlementDate, debtorName, creditorName, debtorAccount, creditorAccount, creditorBic, chargeBearer, remittanceInfo`.
+- **New response**: `paymentId, status (ACCP/RJCT), reasonCode, uetr, workflow{finalState, history[{seq,state}]}, pacs008`
+  (the XML string). If your real services shape responses differently, `wirepay_core/canonical.py` is the **one**
+  place to adapt.
+
+Add or change a rule without touching code: `wirepay_core/spec/mapping_rules.yaml`.
+
+## About the bundled stand-ins — read this
+
+Your real old and new code were not available when this was built, so `java/old` (Java 8 target) and `java/new`
+(Java 18 target) are **stand-in implementations of the same use case**, there so the agent runs end to end. They
+are not your code. The new stand-in contains **two deliberate parity gaps** (`PARITY-GAP-1/2` in
+`WirePaymentProcessor.java`) so there is something real to find; `-Dwirepay.parityFix=true` (or "parity gaps
+fixed" in the UI) removes them.
+
+Things this does **not** do:
+- It does not run the stand-ins on a real JDK 8 — they are *compiled* for Java 8 and run on whatever JVM is installed.
+  Behavioural differences between JVM versions only appear when you point the agent at your real deployed services.
+- pacs.008 checking is structural (mandatory elements, parseable). Full XSD validation needs the official schema
+  files; they can be plugged in at `canon_new()`.
+- Diagnosis is deterministic and rule-based. No LLM is called; an AI explainer could sit on top of the patterns later.
+- Sending requests to a **live production** payment service creates real payments. Point the old side at a test
+  or shadow environment, or use the replay agent against recorded traffic.
+
+## Deploy on Streamlit Community Cloud
+
+Main file `streamlit_app.py`; `packages.txt` installs a JDK. If the hosted JDK is older than 18, the new side is
+compiled for the highest level available and the app says so.
+
+## Layout
+
+```
+streamlit_app.py     UI              run_dualrun.py  CLI            agent.yaml   configuration
+wirepay_core/        engine: adapters, canonical form, compare, explain, generator, report, ui
+  spec/mapping_rules.yaml           the rules
+java/old, java/new   stand-in services (Java 8 / Java 18)                       tests/   23 tests
+```
