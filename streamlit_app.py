@@ -1,4 +1,4 @@
-"""Twin Run - the SAME request goes to the OLD and the NEW implementation, live, and the answers are compared.
+"""Live Agent - the SAME request goes to the OLD and the NEW implementation, live, and the answers are compared.
 
 Run with:  streamlit run streamlit_app.py     (or `make ui`)
 """

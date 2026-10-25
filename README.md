@@ -1,12 +1,12 @@
-# Twin Run
+# Live Agent
 
-**Twin Run** tests the migration of wire-payment creation from the old Java 8 service (flat payment model, no
+**Live Agent** tests the migration of wire-payment creation from the old Java 8 service (flat payment model, no
 workflow) to the new Java 18 service (workflow model, ISO 20022 **pacs.008**, plus new features).
 
 > Send the **same request** to the old code and the new code at the same time, and compare what each one decides —
 > for one payment you are debugging, or for a thousand generated ones.
 
-Its sibling product **Parity Replay** ([`wirepay-replay-agent`](https://github.com/aidragons123/wirepay-replay-agent)), replays what the old
+Its sibling product **Replay Agent** ([`wirepay-replay-agent`](https://github.com/aidragons123/wirepay-replay-agent)), replays what the old
 system already processed in production instead of calling it again.
 
 ## Run it
