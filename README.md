@@ -102,6 +102,21 @@ Every payment gets one verdict:
 The expected-difference checks use code that never touches the new service (`wirepay_core/explain.py`), so a
 buggy new feature cannot excuse itself.
 
+## Compare two Git branches, tags or commits
+
+Settings -> Services under test -> **Git repository**. Old and new are set separately, so they can be two branches of
+one repository, two commits, two tags, or two repositories. The agent clones into its own folder, checks out the ref,
+compiles it with `javac` (or runs your build command, e.g. `mvn -q package`, and uses the classpath you give) and runs
+it. Every run stores the commit it tested (`name@ref . sha`). It only reads; it never pushes. For private repositories
+paste an access token (kept for the browser session only).
+
+The entry class must speak the batch protocol of the stand-ins (one JSON request per line on stdin, one JSON answer
+per line on stdout). A service that cannot do that should be deployed and used through the HTTP option instead.
+
+Try it locally: `python3 demo/make_demo_repo.py /tmp/wire-demo` builds a repo with branches `legacy`, `modern` and
+`modern-fixed`; use that path as the repository. On Streamlit Community Cloud a local path does not exist, so push that
+repo to GitHub and use its https URL. See `demo/DEMO_GUIDE.md` for the demo script.
+
 ## Point it at your real services
 
 Both sides are adapters. Edit `agent.yaml`, or use the sidebar in the app:
